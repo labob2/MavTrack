@@ -1,4 +1,4 @@
-# Academic Ledger
+# MavTrack
 
 A GPA, credit, and scholarship tracker.
 
