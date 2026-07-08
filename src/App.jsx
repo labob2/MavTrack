@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useMemo } from "react";
+import { supabase } from "./lib/supabaseClient.js";
+import Auth from "./Auth.jsx";
 
 /* ============ constants ============ */
 const GRADES = ['A','B','C','D','F'];
 const GRADE_POINTS = {'A':4.0,'B':3.0,'C':2.0,'D':1.0,'F':0.0};
-const STORAGE_KEY = 'academic-ledger-data';
 
-function uid(){ return Math.random().toString(36).slice(2,10) + Date.now().toString(36).slice(-4); }
+function uid(){ return crypto.randomUUID(); }
 
 function defaultGroups(){
   return [
@@ -217,7 +218,7 @@ const NAV_ITEMS = [
   { id:'whatif', label:'What-if', Icon:IconWhatIf },
 ];
 
-function Sidebar({ activeTab, setActiveTab }){
+function Sidebar({ activeTab, setActiveTab, onSignOut, userEmail }){
   return (
     <nav className="al-sidebar">
       {NAV_ITEMS.map(item => {
@@ -231,6 +232,11 @@ function Sidebar({ activeTab, setActiveTab }){
           </div>
         );
       })}
+      <div className="al-sidebar-spacer" />
+      <div className="al-sidebar-account">
+        {userEmail && <div className="al-sidebar-email" title={userEmail}>{userEmail}</div>}
+        <button className="al-btn-ghost al-signout-btn" onClick={onSignOut}>Sign out</button>
+      </div>
     </nav>
   );
 }
@@ -556,6 +562,10 @@ const CSS = `
 
 .al-body{ position:relative; z-index:1; display:flex; min-height:calc(100vh - 78px); }
 .al-sidebar{ width:196px; flex:0 0 196px; padding:20px 12px; border-right:1px solid var(--line); display:flex; flex-direction:column; gap:2px; }
+.al-sidebar-spacer{ flex:1; }
+.al-sidebar-account{ border-top:1px solid var(--line); padding-top:12px; margin-top:12px; display:flex; flex-direction:column; gap:8px; }
+.al-sidebar-email{ font-family:var(--mono); font-size:11px; color:var(--text-faint); padding:0 10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.al-signout-btn{ width:100%; text-align:center; }
 .al-nav-item{ display:flex; align-items:center; gap:10px; padding:9px 10px; border-radius:7px; color:var(--text-dim); cursor:pointer; font-size:13px; font-weight:600; }
 .al-nav-item:hover{ background:var(--bg-elevated); color:var(--text); }
 .al-nav-item.active{ background:var(--bg-elevated); color:var(--accent); }
@@ -568,6 +578,10 @@ const CSS = `
   .al-sidebar{ width:100%; flex-direction:row; overflow-x:auto; border-right:none; border-bottom:1px solid var(--line); padding:10px 12px; }
   .al-main{ padding:20px; }
   .al-top{ flex-wrap:wrap; gap:14px; }
+  .al-sidebar-spacer{ display:none; }
+  .al-sidebar-account{ border-top:none; border-left:1px solid var(--line); margin-top:0; padding-top:0; padding-left:12px; flex-direction:row; align-items:center; flex:0 0 auto; }
+  .al-sidebar-email{ display:none; }
+  .al-signout-btn{ white-space:nowrap; }
 }
 
 .al-h2{ font-size:17px; font-weight:700; margin:0 0 4px; color:var(--text); }
@@ -653,56 +667,118 @@ input::placeholder{ color:var(--text-faint); }
 .al-delta-lbl{ font-family:var(--mono); font-size:10px; text-transform:uppercase; color:var(--text-faint); letter-spacing:.06em; }
 .al-delta-val{ font-family:var(--mono); font-size:24px; font-weight:700; margin-top:6px; color:var(--text); }
 .al-delta-diff{ font-size:13px; color:var(--text-faint); }
-.al-delta-diff{ font-size:13px; color:var(--text-faint); }
 .al-footer{ position:relative; z-index:1; text-align:center; padding:22px 20px 30px; font-size:11px; color:var(--text-faint); border-top:1px solid var(--line); font-family:var(--mono); }
+.al-sync-error{ position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:50; background:var(--bad); color:#2A0D0D; font-family:var(--mono); font-size:12px; font-weight:700; padding:9px 16px; border-radius:8px; cursor:pointer; box-shadow:0 6px 20px rgba(0,0,0,.4); max-width:90vw; text-align:center; }
+`;
+
+/* ============ Supabase row <-> local state field mapping ============ */
+function groupFromRow(row){
+  return { id: row.id, label: row.label, type: row.type, creditsRequired: Number(row.credits_required||0) };
+}
+function groupToInsertRow(g, userId){
+  return { id: g.id, user_id: userId, label: g.label, type: g.type, credits_required: Number(g.creditsRequired||0) };
+}
+function courseFromRow(row){
+  return { id: row.id, name: row.name, credits: Number(row.credits||0), grade: row.grade || '', groupId: row.group_id || '' };
+}
+function scholarshipFromRow(row){
+  return { id: row.id, name: row.name, minGPA: Number(row.min_gpa||0), minCredits: Number(row.min_credits||0), notes: row.notes || '' };
+}
+
+const LOADING_CSS = `
+:root{ --bg:#0B0E12; --text:#E7E9EA; --text-faint:#5C6570; --mono:ui-monospace,SFMono-Regular,'SF Mono',Consolas,'Courier New',monospace; }
+.al-loading-screen{ min-height:100vh; display:flex; align-items:center; justify-content:center; background:var(--bg); color:var(--text-faint); font-family:var(--mono); font-size:13px; letter-spacing:.04em; }
 `;
 
 /* ============ main app ============ */
 export default function App(){
-  const [loaded, setLoaded] = useState(false);
-  const [groups, setGroups] = useState(defaultGroups);
+  const [session, setSession] = useState(null);
+  const [authChecked, setAuthChecked] = useState(false);
+  const [dataLoaded, setDataLoaded] = useState(false);
+  const [syncError, setSyncError] = useState(null);
+
+  const [groups, setGroups] = useState([]);
   const [semesters, setSemesters] = useState([]);
   const [scholarships, setScholarships] = useState([]);
   const [whatIf, setWhatIf] = useState({ name:'Next semester', courses:[] });
   const [activeTab, setActiveTab] = useState('dashboard');
 
+  /* ---- track auth session ---- */
   useEffect(() => {
-    let cancelled = false;
-    function applyPayload(raw){
-      if(!raw) return;
-      try{
-        const parsed = JSON.parse(raw);
-        if(parsed.groups && parsed.groups.length) setGroups(parsed.groups);
-        if(parsed.semesters) setSemesters(parsed.semesters);
-        if(parsed.scholarships) setScholarships(parsed.scholarships);
-      }catch(e){ console.error('parse failed', e); }
-    }
-    async function load(){
-      const hasWidgetStorage = typeof window !== 'undefined' && window.storage && typeof window.storage.get === 'function';
-      if(hasWidgetStorage){
-        try{
-          const res = await window.storage.get(STORAGE_KEY, false);
-          if(!cancelled) applyPayload(res && res.value);
-        }catch(e){ /* key not found yet is fine */ }
-      } else {
-        try{ if(!cancelled) applyPayload(window.localStorage.getItem(STORAGE_KEY)); }catch(e){}
+    supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthChecked(true);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+      if(!newSession){
+        setGroups([]); setSemesters([]); setScholarships([]);
+        setWhatIf({ name:'Next semester', courses:[] });
+        setDataLoaded(false);
       }
-      if(!cancelled) setLoaded(true);
-    }
-    load();
-    return () => { cancelled = true; };
+    });
+    return () => { listener.subscription.unsubscribe(); };
   }, []);
 
+  /* ---- load this user's data once signed in ---- */
   useEffect(() => {
-    if(!loaded) return;
-    const payload = JSON.stringify({ groups, semesters, scholarships });
-    const hasWidgetStorage = typeof window !== 'undefined' && window.storage && typeof window.storage.set === 'function';
-    if(hasWidgetStorage){
-      window.storage.set(STORAGE_KEY, payload, false).catch(e => console.error('save failed', e));
-    } else {
-      try{ window.localStorage.setItem(STORAGE_KEY, payload); }catch(e){ console.error('local storage write failed', e); }
+    if(!session) return;
+    let cancelled = false;
+    async function loadData(){
+      try{
+        const userId = session.user.id;
+
+        let { data: groupRows, error: gErr } = await supabase
+          .from('requirement_groups').select('*').order('created_at', { ascending: true });
+        if(gErr) throw gErr;
+
+        if(!groupRows || groupRows.length === 0){
+          const seed = defaultGroups().map(g => groupToInsertRow(g, userId));
+          const { data: inserted, error: seedErr } = await supabase.from('requirement_groups').insert(seed).select();
+          if(seedErr) throw seedErr;
+          groupRows = inserted;
+        }
+
+        const { data: semRows, error: sErr } = await supabase
+          .from('semesters').select('*, courses(*)').order('created_at', { ascending: true });
+        if(sErr) throw sErr;
+
+        const { data: scholRows, error: schErr } = await supabase
+          .from('scholarships').select('*').order('created_at', { ascending: true });
+        if(schErr) throw schErr;
+
+        const { data: whatIfRow, error: wErr } = await supabase
+          .from('whatif_state').select('*').eq('user_id', userId).maybeSingle();
+        if(wErr) throw wErr;
+
+        if(cancelled) return;
+        setGroups(groupRows.map(groupFromRow));
+        setSemesters((semRows || []).map(s => ({
+          id: s.id,
+          name: s.name,
+          courses: (s.courses || []).map(courseFromRow)
+        })));
+        setScholarships((scholRows || []).map(scholarshipFromRow));
+        setWhatIf(whatIfRow ? { name: whatIfRow.name, courses: whatIfRow.courses || [] } : { name:'Next semester', courses:[] });
+        setDataLoaded(true);
+      }catch(err){
+        console.error('failed to load data', err);
+        if(!cancelled) setSyncError('Could not load your data. Try refreshing the page.');
+      }
     }
-  }, [groups, semesters, scholarships, loaded]);
+    loadData();
+    return () => { cancelled = true; };
+  }, [session]);
+
+  /* ---- what-if is a single scratch row per user; safe to blind-upsert on change ---- */
+  useEffect(() => {
+    if(!session || !dataLoaded) return;
+    supabase.from('whatif_state').upsert({
+      user_id: session.user.id, name: whatIf.name, courses: whatIf.courses, updated_at: new Date().toISOString()
+    }).then(({ error }) => {
+      if(error){ console.error('whatif sync failed', error); setSyncError('Could not save your what-if changes.'); }
+    });
+  }, [whatIf, session, dataLoaded]);
 
   const allRealCourses = useMemo(() => semesters.flatMap(s => s.courses), [semesters]);
   const cumulativeGPA = useMemo(() => gpaOf(allRealCourses), [allRealCourses]);
@@ -740,39 +816,92 @@ export default function App(){
   const whatIfProjectedGPA = useMemo(() => gpaOf(allRealCourses.concat(whatIf.courses)), [allRealCourses, whatIf.courses]);
   const whatIfScholarshipTiers = useMemo(() => scholarships.map(s => ({ ...s, tier: tierFor(whatIfProjectedGPA, s.minGPA) })), [scholarships, whatIfProjectedGPA]);
 
-  /* ---- mutation handlers ---- */
+  /* ---- mutation handlers: update local state immediately, sync to Supabase in the background ---- */
+  function reportError(action, error){
+    console.error(action, error);
+    setSyncError(`Could not save that change (${action}). Check your connection.`);
+  }
+
   function addSemester(name){
-    setSemesters(prev => [...prev, { id: uid(), name: name || `Semester ${prev.length+1}`, courses: [] }]);
+    const row = { id: uid(), name: name || `Semester ${semesters.length+1}`, courses: [] };
+    setSemesters(prev => [...prev, row]);
+    supabase.from('semesters').insert({ id: row.id, user_id: session.user.id, name: row.name })
+      .then(({ error }) => { if(error) reportError('add semester', error); });
   }
   function renameSemester(id, name){
     setSemesters(prev => prev.map(s => s.id === id ? { ...s, name } : s));
+    supabase.from('semesters').update({ name }).eq('id', id)
+      .then(({ error }) => { if(error) reportError('rename semester', error); });
   }
   function deleteSemester(id){
     setSemesters(prev => prev.filter(s => s.id !== id));
+    supabase.from('semesters').delete().eq('id', id)
+      .then(({ error }) => { if(error) reportError('delete semester', error); });
   }
   function addCourse(semId, course){
-    setSemesters(prev => prev.map(s => s.id === semId ? { ...s, courses: [...s.courses, { id: uid(), ...course }] } : s));
+    const row = { id: uid(), ...course };
+    setSemesters(prev => prev.map(s => s.id === semId ? { ...s, courses: [...s.courses, row] } : s));
+    supabase.from('courses').insert({
+      id: row.id, user_id: session.user.id, semester_id: semId, group_id: row.groupId || null,
+      name: row.name, credits: Number(row.credits||0), grade: row.grade || null
+    }).then(({ error }) => { if(error) reportError('add course', error); });
   }
   function updateCourse(semId, courseId, field, value){
+    const val = field === 'credits' ? Number(value||0) : value;
     setSemesters(prev => prev.map(s => s.id !== semId ? s : {
-      ...s, courses: s.courses.map(c => c.id === courseId ? { ...c, [field]: field === 'credits' ? Number(value||0) : value } : c)
+      ...s, courses: s.courses.map(c => c.id === courseId ? { ...c, [field]: val } : c)
     }));
+    const dbField = field === 'groupId' ? 'group_id' : field;
+    const dbVal = (field === 'grade' && value === '') ? null : (field === 'groupId' && value === '' ? null : val);
+    supabase.from('courses').update({ [dbField]: dbVal }).eq('id', courseId)
+      .then(({ error }) => { if(error) reportError('update course', error); });
   }
   function deleteCourse(semId, courseId){
     setSemesters(prev => prev.map(s => s.id !== semId ? s : { ...s, courses: s.courses.filter(c => c.id !== courseId) }));
+    supabase.from('courses').delete().eq('id', courseId)
+      .then(({ error }) => { if(error) reportError('delete course', error); });
   }
-  function addGroup(g){ setGroups(prev => [...prev, { id: uid(), ...g }]); }
+  function addGroup(g){
+    const row = { id: uid(), ...g };
+    setGroups(prev => [...prev, row]);
+    supabase.from('requirement_groups').insert(groupToInsertRow(row, session.user.id))
+      .then(({ error }) => { if(error) reportError('add requirement group', error); });
+  }
   function updateGroup(id, field, value){
-    setGroups(prev => prev.map(g => g.id === id ? { ...g, [field]: field === 'creditsRequired' ? Number(value||0) : value } : g));
+    const val = field === 'creditsRequired' ? Number(value||0) : value;
+    setGroups(prev => prev.map(g => g.id === id ? { ...g, [field]: val } : g));
+    const dbField = field === 'creditsRequired' ? 'credits_required' : field;
+    supabase.from('requirement_groups').update({ [dbField]: val }).eq('id', id)
+      .then(({ error }) => { if(error) reportError('update requirement group', error); });
   }
-  function deleteGroup(id){ setGroups(prev => prev.filter(g => g.id !== id)); }
+  function deleteGroup(id){
+    setGroups(prev => prev.filter(g => g.id !== id));
+    supabase.from('requirement_groups').delete().eq('id', id)
+      .then(({ error }) => { if(error) reportError('delete requirement group', error); });
+  }
 
-  function addScholarship(s){ setScholarships(prev => [...prev, { id: uid(), ...s }]); }
+  function addScholarship(s){
+    const row = { id: uid(), ...s };
+    setScholarships(prev => [...prev, row]);
+    supabase.from('scholarships').insert({
+      id: row.id, user_id: session.user.id, name: row.name,
+      min_gpa: Number(row.minGPA||0), min_credits: Number(row.minCredits||0), notes: row.notes || ''
+    }).then(({ error }) => { if(error) reportError('add scholarship', error); });
+  }
   function updateScholarship(id, field, value){
-    setScholarships(prev => prev.map(s => s.id === id ? { ...s, [field]: (field==='minGPA'||field==='minCredits') ? Number(value||0) : value } : s));
+    const val = (field==='minGPA'||field==='minCredits') ? Number(value||0) : value;
+    setScholarships(prev => prev.map(s => s.id === id ? { ...s, [field]: val } : s));
+    const dbField = field === 'minGPA' ? 'min_gpa' : field === 'minCredits' ? 'min_credits' : field;
+    supabase.from('scholarships').update({ [dbField]: val }).eq('id', id)
+      .then(({ error }) => { if(error) reportError('update scholarship', error); });
   }
-  function deleteScholarship(id){ setScholarships(prev => prev.filter(s => s.id !== id)); }
+  function deleteScholarship(id){
+    setScholarships(prev => prev.filter(s => s.id !== id));
+    supabase.from('scholarships').delete().eq('id', id)
+      .then(({ error }) => { if(error) reportError('delete scholarship', error); });
+  }
 
+  /* what-if courses stay local-only per keystroke; the effect above persists the whole blob */
   function addWhatIfCourse(course){ setWhatIf(prev => ({ ...prev, courses: [...prev.courses, { id: uid(), ...course }] })); }
   function updateWhatIfCourse(courseId, field, value){
     setWhatIf(prev => ({ ...prev, courses: prev.courses.map(c => c.id === courseId ? { ...c, [field]: field === 'credits' ? Number(value||0) : value } : c) }));
@@ -781,10 +910,27 @@ export default function App(){
   function renameWhatIf(name){ setWhatIf(prev => ({ ...prev, name })); }
   function resetWhatIf(){ setWhatIf({ name:'Next semester', courses:[] }); }
 
+  async function handleSignOut(){
+    await supabase.auth.signOut();
+  }
+
+  if(!authChecked){
+    return <div className="al-loading-screen"><style>{LOADING_CSS}</style>Loading…</div>;
+  }
+  if(!session){
+    return <Auth />;
+  }
+  if(!dataLoaded){
+    return <div className="al-loading-screen"><style>{LOADING_CSS}</style>Loading your data…</div>;
+  }
+
   return (
     <div className="al-root">
       <style>{CSS}</style>
       <div className="al-bg" />
+      {syncError && (
+        <div className="al-sync-error" onClick={() => setSyncError(null)} title="Tap to dismiss">{syncError}</div>
+      )}
       <TopStatus
         cumulativeGPA={cumulativeGPA}
         semesterCount={semesters.length}
@@ -794,7 +940,7 @@ export default function App(){
         overallTier={overallTier}
       />
       <div className="al-body">
-        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
+        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} onSignOut={handleSignOut} userEmail={session.user.email} />
         <main className="al-main">
           {activeTab === 'dashboard' && (
             <DashboardView groups={groups} earnedByGroup={earnedByGroup} semesters={semesters} scholarshipTiers={scholarshipTiers} gpaSeries={gpaSeries} />
