@@ -86,12 +86,7 @@ function IconTrash(props){
     <path d="M5.5 6L6.2 16C6.2 16.6 6.7 17 7.3 17H12.7C13.3 17 13.8 16.6 13.8 16L14.5 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
   </svg>;
 }
-function Logo(props){
-  return <svg width="20" height="20" viewBox="0 0 24 24" fill="none" {...props}>
-    <path d="M4 16L9 10L13 13L20 5" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-    <path d="M15 5H20V10" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-  </svg>;
-}
+
 
 /* ============ shared bits ============ */
 function StatusPill({ tier, label }){
@@ -246,8 +241,7 @@ function TopStatus({ cumulativeGPA, semesterCount, creditsCompleted, creditsRequ
     <header className="al-top">
       <div className="al-top-left">
         <div className="al-brand">
-          <Logo />
-          <span className="al-brand-name">MavTrack</span>
+          <img src="/mavtrack-logo.png" alt="MavTrack" className="al-brand-wordmark" />
         </div>
         <div className="al-top-stats">
           <div className="al-stat"><b>{semesterCount}</b><span>Semesters</span></div>
@@ -549,8 +543,8 @@ const CSS = `
   background:rgba(11,14,18,.78); backdrop-filter:blur(10px);
 }
 .al-eyebrow{ font-family:var(--mono); font-size:11px; letter-spacing:.14em; text-transform:uppercase; color:var(--text-faint); margin:0 0 8px; }
-.al-brand{ display:flex; align-items:center; gap:8px; margin:0 0 10px; }
-.al-brand-name{ font-family:var(--mono); font-size:15px; font-weight:700; letter-spacing:.04em; color:var(--text); }
+.al-brand{ display:flex; align-items:center; margin:0 0 10px; }
+.al-brand-wordmark{ height:18px; width:auto; display:block; }
 .al-top-stats{ display:flex; gap:24px; }
 .al-stat{ display:flex; flex-direction:column; }
 .al-stat b{ font-family:var(--mono); font-size:14px; color:var(--text); }
@@ -668,6 +662,9 @@ input::placeholder{ color:var(--text-faint); }
 .al-delta-val{ font-family:var(--mono); font-size:24px; font-weight:700; margin-top:6px; color:var(--text); }
 .al-delta-diff{ font-size:13px; color:var(--text-faint); }
 .al-footer{ position:relative; z-index:1; text-align:center; padding:22px 20px 30px; font-size:11px; color:var(--text-faint); border-top:1px solid var(--line); font-family:var(--mono); }
+.al-footer-links{ display:flex; justify-content:center; gap:16px; margin-bottom:10px; }
+.al-footer-link{ color:var(--text-dim); text-decoration:none; font-family:var(--mono); font-size:11px; letter-spacing:.02em; }
+.al-footer-link:hover{ color:var(--accent); }
 .al-sync-error{ position:fixed; top:14px; left:50%; transform:translateX(-50%); z-index:50; background:var(--bad); color:#2A0D0D; font-family:var(--mono); font-size:12px; font-weight:700; padding:9px 16px; border-radius:8px; cursor:pointer; box-shadow:0 6px 20px rgba(0,0,0,.4); max-width:90vw; text-align:center; }
 `;
 
@@ -970,6 +967,10 @@ export default function App(){
         </main>
       </div>
       <footer className="al-footer">
+        <div className="al-footer-links">
+          <a href="https://github.com/labob2/MavTrack" target="_blank" rel="noopener noreferrer" className="al-footer-link">GitHub</a>
+          <a href="https://www.linkedin.com/in/labibalkarim/" target="_blank" rel="noopener noreferrer" className="al-footer-link">LinkedIn</a>
+        </div>
         MavTrack &middot; created by Md Labib Al Karim &middot; All rights reserved &middot; Not affiliated with the University of Texas at Arlington
       </footer>
     </div>
